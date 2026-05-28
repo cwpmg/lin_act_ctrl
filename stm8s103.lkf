@@ -2,6 +2,7 @@
 ##	Copyright (c) 2008 by COSMIC Software
 ##
 +seg .vector -b 0x8000 -m 0x2000 -n .vector	# vectors start address
+-k
 +seg .const -a .vector -n .const		# constants follow vectors
 +seg .text -a .const -n .text			# code follow constants
 +seg .eeprom -b 0x4000 -m 640			# internal eeprom
