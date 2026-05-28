@@ -1,0 +1,7 @@
+
+# dot files
+/.vscode
+
+# project out
+/build
+/bin
