@@ -26,16 +26,20 @@
 #define BTN_PROG_VAL()  GPIO_ReadInputPin(BTN_PROG_PORT, BTN_PROG_PIN)
 #define CTRL_IN_VAL()   GPIO_ReadInputPin(CTRL_IN_PORT, CTRL_IN_PIN)
 
+#define MOTOR_RUN_TIME_MIN 40
+#define MOTOR_RUN_TIME_MAX 600
+
 typedef enum
 {
    STATE_STOP = 0,
-   STATE_MOTOR_WORKING = 1
+   STATE_MOTOR_WORKING = 1,
+   STATE_DELAY = 2
 } state_t;
 
 typedef enum
 {
-   NEXT_STATE_OPEN = 1,
-   NEXT_STATE_CLOSE = 2
+   NEXT_STATE_OPEN = 0,
+   NEXT_STATE_CLOSE = 1
 } next_state_t;
 
 typedef enum
@@ -44,18 +48,32 @@ typedef enum
    CTRL_IN_STATE_ON = 1
 } ctrl_in_state_t;
 
+typedef enum
+{
+   LOGIC_OPEN_STOP_CLOSE = 0,
+   LOGIC_OPEN_CLOSE = 1,
+   LOGIC_OPEN_CLOSE_WO_INTS = 2
+} logic_t;
+
 /* Private variables ---------------------------------------------------------*/
 
 static volatile state_t         state = STATE_STOP;
-static volatile next_state_t    next_state = NEXT_STATE_OPEN;
+static volatile next_state_t    next_state;
 static volatile uint16_t        motor_timer = 0;
 static volatile ctrl_in_state_t ctrl_in_state = CTRL_IN_STATE_OFF;
+static volatile uint16_t        tick_timer = 0;
+static volatile logic_t         logic;
+static volatile uint16_t        close_time;
+static volatile uint16_t        open_time;
 
 /* Private functions prototypes ----------------------------------------------*/
 
 void init_peripherals(void);
+void restore_data_from_ee(void);
 void motor_close(void);
 void motor_open(void);
+void motor_stop(void);
+void motor_run(void);
 void motor_timer_isr(void);
 void led_isr(void);
 void ctrl_in_isr(void);
@@ -69,9 +87,9 @@ void main(void)
 {
    init_peripherals();
 
-   enableInterrupts();
+   restore_data_from_ee();
 
-   // state = read_next_state_from_ee();
+   enableInterrupts();
 
    while (true)
    {
@@ -79,21 +97,7 @@ void main(void)
       {
          case STATE_STOP:
          {
-            if (ctrl_in_is_pressed())
-            {
-               if (next_state == NEXT_STATE_CLOSE)
-               {
-                  motor_close();
-                  next_state = NEXT_STATE_OPEN;
-                  state = STATE_MOTOR_WORKING;
-               }
-               else if (next_state == NEXT_STATE_OPEN)
-               {
-                  motor_open();
-                  next_state = NEXT_STATE_CLOSE;
-                  state = STATE_MOTOR_WORKING;
-               }
-            }
+            if (ctrl_in_is_pressed()) motor_run();
          }
          break;
 
@@ -101,11 +105,24 @@ void main(void)
          {
             if (ctrl_in_is_pressed())
             {
-               REL_CLOSE_OFF();
-               REL_OPEN_OFF();
-               motor_timer = 0;
-               state = STATE_STOP;
+               if (logic == LOGIC_OPEN_STOP_CLOSE)
+               {
+                  motor_stop();
+                  state = STATE_STOP;
+               }
+               else if (logic == LOGIC_OPEN_CLOSE)
+               {
+                  motor_stop();
+                  tick_timer = 1000;
+                  state = STATE_DELAY;
+               }
             }
+         }
+         break;
+
+         case STATE_DELAY:
+         {
+            if (tick_timer == 0) motor_run();
          }
          break;
       }
@@ -129,6 +146,8 @@ void t4_isr(void)
    ctrl_in_isr();
 
    led_isr();
+
+   if (tick_timer != 0) --tick_timer;
 }
 
 /* Private functions ---------------------------------------------------------*/
@@ -151,18 +170,70 @@ void init_peripherals(void)
    FLASH_Unlock(FLASH_MEMTYPE_DATA);
 }
 
+void restore_data_from_ee(void)
+{
+   next_state = read_next_state_from_ee();
+   if (next_state > NEXT_STATE_CLOSE)
+   {
+      next_state = NEXT_STATE_OPEN;
+      save_next_state_to_ee(next_state);
+   }
+
+   logic = read_logic_from_ee();
+   if (logic > LOGIC_OPEN_CLOSE_WO_INTS)
+   {
+      logic = LOGIC_OPEN_STOP_CLOSE;
+      save_logic_to_ee(logic);
+   }
+
+   close_time = read_close_time_from_ee();
+   if ((close_time < MOTOR_RUN_TIME_MIN) || (close_time > MOTOR_RUN_TIME_MAX))
+   {
+      close_time = MOTOR_RUN_TIME_MIN;
+      save_close_time_to_ee(close_time);
+   }
+
+   open_time = read_open_time_from_ee();
+   if ((open_time < MOTOR_RUN_TIME_MIN) || (open_time > MOTOR_RUN_TIME_MAX))
+   {
+      open_time = MOTOR_RUN_TIME_MIN;
+      save_open_time_to_ee(open_time);
+   }
+}
+
 void motor_close(void)
 {
-   REL_OPEN_OFF();
    REL_CLOSE_ON();
-   motor_timer = 50;
+   next_state = NEXT_STATE_OPEN;
+   motor_timer = close_time;
 }
 
 void motor_open(void)
 {
-   REL_CLOSE_OFF();
    REL_OPEN_ON();
-   motor_timer = 50;
+   next_state = NEXT_STATE_CLOSE;
+   motor_timer = open_time;
+}
+
+void motor_stop(void)
+{
+   REL_CLOSE_OFF();
+   REL_OPEN_OFF();
+   motor_timer = 0;
+}
+
+void motor_run(void)
+{
+   if (next_state == NEXT_STATE_CLOSE)
+   {
+      motor_close();
+   }
+   else if (next_state == NEXT_STATE_OPEN)
+   {
+      motor_open();
+   }
+
+   state = STATE_MOTOR_WORKING;
 }
 
 void motor_timer_isr(void)
@@ -173,6 +244,7 @@ void motor_timer_isr(void)
       {
          REL_CLOSE_OFF();
          REL_OPEN_OFF();
+         state = STATE_STOP;
       }
    }
 }
@@ -183,8 +255,8 @@ void led_isr(void)
 
    ++cnt;
 
-   if (cnt == 100) LED_OFF();
-   else if (cnt == 2000)
+   if (cnt == 80) LED_OFF();
+   else if (cnt == 1000)
    {
       cnt = 0;
       LED_ON();
