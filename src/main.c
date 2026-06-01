@@ -5,6 +5,8 @@
 #include "iostm8s003.h"
 #include "eeprom.h"
 
+/* IO pins ports -------------------------------------------------------------*/
+
 #define LED_PORT       GPIOB
 #define LED_PIN        GPIO_PIN_5
 #define REL_OPEN_PORT  GPIOD
@@ -26,8 +28,17 @@
 #define BTN_PROG_VAL()  GPIO_ReadInputPin(BTN_PROG_PORT, BTN_PROG_PIN)
 #define CTRL_IN_VAL()   GPIO_ReadInputPin(CTRL_IN_PORT, CTRL_IN_PIN)
 
+/* Private defines -----------------------------------------------------------*/
+
 #define MOTOR_RUN_TIME_MIN 40
 #define MOTOR_RUN_TIME_MAX 600
+
+#define BTN_PROG_PRESS_SHORT_TIME_MIN 150
+#define BTN_PROG_PRESS_SHORT_TIME_MAX 1000
+#define BTN_PROG_PRESS_LONG_TIME      5000
+#define BTN_PROG_RELEASE_TIME         150
+
+/* Private typedefs ----------------------------------------------------------*/
 
 typedef enum
 {
@@ -50,6 +61,13 @@ typedef enum
 
 typedef enum
 {
+   BTN_PROG_RELEASED = 0,
+   BTN_PROG_PRESSED_SHORT = 1,
+   BTN_PROG_PRESSED_LONG = 2
+} btn_prog_state_t;
+
+typedef enum
+{
    LOGIC_OPEN_STOP_CLOSE = 0,
    LOGIC_OPEN_CLOSE = 1,
    LOGIC_OPEN_CLOSE_WO_INTS = 2
@@ -57,14 +75,15 @@ typedef enum
 
 /* Private variables ---------------------------------------------------------*/
 
-static volatile state_t         state = STATE_STOP;
-static volatile next_state_t    next_state;
-static volatile uint16_t        motor_timer = 0;
-static volatile ctrl_in_state_t ctrl_in_state = CTRL_IN_STATE_OFF;
-static volatile uint16_t        tick_timer = 0;
-static volatile logic_t         logic;
-static volatile uint16_t        close_time;
-static volatile uint16_t        open_time;
+static volatile state_t          state = STATE_STOP;
+static volatile next_state_t     next_state;
+static volatile uint16_t         motor_timer = 0;
+static volatile ctrl_in_state_t  ctrl_in_state = CTRL_IN_STATE_OFF;
+static volatile btn_prog_state_t btn_prog_state = BTN_PROG_RELEASED;
+static volatile uint16_t         tick_timer = 0;
+static volatile logic_t          logic;
+static volatile uint16_t         close_time;
+static volatile uint16_t         open_time;
 
 /* Private functions prototypes ----------------------------------------------*/
 
@@ -78,6 +97,9 @@ void motor_timer_isr(void);
 void led_isr(void);
 void ctrl_in_isr(void);
 bool ctrl_in_is_pressed(void);
+void btn_prog_isr(void);
+
+btn_prog_state_t btn_prog_get_state(void);
 
 /**************************************************************************** */
 /* MAIN LOOP                                                                  */
@@ -144,6 +166,8 @@ void t4_isr(void)
    }
 
    ctrl_in_isr();
+
+   btn_prog_isr();
 
    led_isr();
 
@@ -297,4 +321,45 @@ bool ctrl_in_is_pressed(void)
    return false;
 }
 
-/* eeprom --------------------------------------------------------------------*/
+void btn_prog_isr(void)
+{
+   static uint16_t cnt = BTN_PROG_RELEASE_TIME;
+   static bool     wait_for_release = false;
+
+   if (wait_for_release)
+   {
+      if (!BTN_PROG_VAL()) cnt = BTN_PROG_RELEASE_TIME;
+      else if (--cnt == 0) wait_for_release = false;
+   }
+   else
+   {
+      if (!BTN_PROG_VAL())
+      {
+         if (++cnt == BTN_PROG_PRESS_LONG_TIME)
+         {
+            btn_prog_state = BTN_PROG_PRESSED_LONG;
+            wait_for_release = true;
+            cnt = BTN_PROG_RELEASE_TIME;
+         }
+      }
+      else
+      {
+         if ((cnt >= BTN_PROG_PRESS_SHORT_TIME_MIN) && (cnt <= BTN_PROG_PRESS_SHORT_TIME_MAX))
+         {
+            btn_prog_state = BTN_PROG_PRESSED_SHORT;
+            wait_for_release = true;
+            cnt = BTN_PROG_RELEASE_TIME;
+         }
+      }
+   }
+}
+
+btn_prog_state_t btn_prog_get_state(void)
+{
+   btn_prog_state_t state;
+
+   state = btn_prog_state;
+   btn_prog_state = BTN_PROG_RELEASED;
+
+   return state;
+}
