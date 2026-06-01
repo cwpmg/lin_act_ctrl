@@ -30,12 +30,12 @@
 
 /* Private defines -----------------------------------------------------------*/
 
-#define MOTOR_RUN_TIME_MIN 40
+#define MOTOR_RUN_TIME_MIN 40 // *100ms
 #define MOTOR_RUN_TIME_MAX 600
 
-#define BTN_PROG_PRESS_SHORT_TIME_MIN 150
+#define BTN_PROG_PRESS_SHORT_TIME_MIN 150 // *1ms
 #define BTN_PROG_PRESS_SHORT_TIME_MAX 1000
-#define BTN_PROG_PRESS_LONG_TIME      5000
+#define BTN_PROG_PRESS_LONG_TIME      3000
 #define BTN_PROG_RELEASE_TIME         150
 
 /* Private typedefs ----------------------------------------------------------*/
@@ -84,6 +84,7 @@ static volatile uint16_t         tick_timer = 0;
 static volatile logic_t          logic;
 static volatile uint16_t         close_time;
 static volatile uint16_t         open_time;
+static volatile uint16_t         btn_prog_isr_cnt = 0;
 
 /* Private functions prototypes ----------------------------------------------*/
 
@@ -323,32 +324,35 @@ bool ctrl_in_is_pressed(void)
 
 void btn_prog_isr(void)
 {
-   static uint16_t cnt = BTN_PROG_RELEASE_TIME;
-   static bool     wait_for_release = false;
+   static bool wait_for_release = false;
 
    if (wait_for_release)
    {
-      if (!BTN_PROG_VAL()) cnt = BTN_PROG_RELEASE_TIME;
-      else if (--cnt == 0) wait_for_release = false;
+      if (!BTN_PROG_VAL()) btn_prog_isr_cnt = BTN_PROG_RELEASE_TIME;
+      else if (--btn_prog_isr_cnt == 0) wait_for_release = false;
    }
    else
    {
       if (!BTN_PROG_VAL())
       {
-         if (++cnt == BTN_PROG_PRESS_LONG_TIME)
+         if (++btn_prog_isr_cnt == BTN_PROG_PRESS_LONG_TIME)
          {
             btn_prog_state = BTN_PROG_PRESSED_LONG;
             wait_for_release = true;
-            cnt = BTN_PROG_RELEASE_TIME;
+            btn_prog_isr_cnt = BTN_PROG_RELEASE_TIME;
          }
       }
       else
       {
-         if ((cnt >= BTN_PROG_PRESS_SHORT_TIME_MIN) && (cnt <= BTN_PROG_PRESS_SHORT_TIME_MAX))
+         if ((btn_prog_isr_cnt >= BTN_PROG_PRESS_SHORT_TIME_MIN) && (btn_prog_isr_cnt <= BTN_PROG_PRESS_SHORT_TIME_MAX))
          {
             btn_prog_state = BTN_PROG_PRESSED_SHORT;
             wait_for_release = true;
-            cnt = BTN_PROG_RELEASE_TIME;
+            btn_prog_isr_cnt = BTN_PROG_RELEASE_TIME;
+         }
+         else
+         {
+            btn_prog_isr_cnt = 0;
          }
       }
    }
@@ -359,7 +363,19 @@ btn_prog_state_t btn_prog_get_state(void)
    btn_prog_state_t state;
 
    state = btn_prog_state;
-   btn_prog_state = BTN_PROG_RELEASED;
+
+   if (state > BTN_PROG_RELEASED)
+   {
+      btn_prog_state = BTN_PROG_RELEASED;
+      btn_prog_isr_cnt = 0;
+   }
 
    return state;
+}
+
+void reset_buttons(void)
+{
+   btn_prog_state = BTN_PROG_RELEASED;
+   ctrl_in_state = CTRL_IN_STATE_OFF;
+   btn_prog_isr_cnt = 0;
 }
