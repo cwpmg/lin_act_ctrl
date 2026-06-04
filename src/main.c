@@ -44,7 +44,8 @@ typedef enum
 {
    STATE_STOP = 0,
    STATE_MOTOR_WORKING = 1,
-   STATE_DELAY = 2
+   STATE_DELAY = 2,
+   STATE_PROG_OPTIONS = 3
 } state_t;
 
 typedef enum
@@ -73,6 +74,14 @@ typedef enum
    LOGIC_OPEN_CLOSE_WO_INTS = 2
 } logic_t;
 
+typedef enum
+{
+   PO_STATE_START = 0,
+   PO_STATE_BLINK = 1,
+   PO_STATE_WAIT_FOR_BTN = 2,
+   PO_STATE_RESET = 3
+} po_state_t;
+
 /* Private variables ---------------------------------------------------------*/
 
 static volatile state_t          state = STATE_STOP;
@@ -85,6 +94,7 @@ static volatile logic_t          logic;
 static volatile uint16_t         close_time;
 static volatile uint16_t         open_time;
 static volatile uint16_t         btn_prog_isr_cnt = 0;
+static volatile bool             stop_led_isr_blink = false;
 
 /* Private functions prototypes ----------------------------------------------*/
 
@@ -99,6 +109,8 @@ void led_isr(void);
 void ctrl_in_isr(void);
 bool ctrl_in_is_pressed(void);
 void btn_prog_isr(void);
+void blink(uint8_t times);
+void program_options_handling(void);
 
 btn_prog_state_t btn_prog_get_state(void);
 
@@ -121,6 +133,8 @@ void main(void)
          case STATE_STOP:
          {
             if (ctrl_in_is_pressed()) motor_run();
+
+            if (btn_prog_get_state() == BTN_PROG_PRESSED_LONG) state = STATE_PROG_OPTIONS;
          }
          break;
 
@@ -146,6 +160,12 @@ void main(void)
          case STATE_DELAY:
          {
             if (tick_timer == 0) motor_run();
+         }
+         break;
+
+         case STATE_PROG_OPTIONS:
+         {
+            program_options_handling();
          }
          break;
       }
@@ -270,6 +290,7 @@ void motor_timer_isr(void)
          REL_CLOSE_OFF();
          REL_OPEN_OFF();
          state = STATE_STOP;
+         reset_buttons();
       }
    }
 }
@@ -277,6 +298,8 @@ void motor_timer_isr(void)
 void led_isr(void)
 {
    static uint16_t cnt = 0;
+
+   if (stop_led_isr_blink) return;
 
    ++cnt;
 
@@ -367,7 +390,7 @@ btn_prog_state_t btn_prog_get_state(void)
    if (state > BTN_PROG_RELEASED)
    {
       btn_prog_state = BTN_PROG_RELEASED;
-      btn_prog_isr_cnt = 0;
+      // btn_prog_isr_cnt = 0;
    }
 
    return state;
@@ -377,5 +400,124 @@ void reset_buttons(void)
 {
    btn_prog_state = BTN_PROG_RELEASED;
    ctrl_in_state = CTRL_IN_STATE_OFF;
-   btn_prog_isr_cnt = 0;
+   // btn_prog_isr_cnt = 0;
+}
+
+void blink(uint8_t times)
+{
+   while (times != 0)
+   {
+      tick_timer = 200;
+      while (tick_timer != 0);
+      LED_ON();
+      tick_timer = 200;
+      while (tick_timer != 0);
+      LED_OFF();
+      --times;
+   }
+}
+
+void learn_open_close_time(void)
+{
+}
+
+void program_options_handling(void)
+{
+   static uint8_t po_state = 0;
+   static uint8_t opt_number = 0;
+
+   switch (po_state)
+   {
+      case PO_STATE_START:
+      {
+         stop_led_isr_blink = true;
+         opt_number = 0;
+
+         LED_ON();
+         tick_timer = 2000;
+         while (tick_timer != 0);
+         LED_OFF();
+         tick_timer = 2000;
+         while (tick_timer != 0);
+
+         po_state = PO_STATE_BLINK;
+         reset_buttons();
+      }
+      break;
+
+      case PO_STATE_BLINK:
+      {
+         blink(1);
+
+         if (++opt_number == 5)
+         {
+            po_state = PO_STATE_RESET;
+            break;
+         }
+
+         tick_timer = 2000;
+         po_state = PO_STATE_WAIT_FOR_BTN;
+      }
+      break;
+
+      case PO_STATE_WAIT_FOR_BTN:
+      {
+         if (btn_prog_get_state() == BTN_PROG_PRESSED_SHORT)
+         {
+            switch (opt_number)
+            {
+               case 1:
+               {
+                  logic = LOGIC_OPEN_STOP_CLOSE;
+                  save_logic_to_ee(logic);
+               }
+               break;
+
+               case 2:
+               {
+                  logic = LOGIC_OPEN_CLOSE;
+                  save_logic_to_ee(logic);
+               }
+               break;
+
+               case 3:
+               {
+                  logic = LOGIC_OPEN_CLOSE_WO_INTS;
+                  save_logic_to_ee(logic);
+               }
+               break;
+
+               case 4:
+               {
+                  learn_open_close_time();
+               }
+               break;
+            }
+
+            blink(opt_number);
+            po_state = PO_STATE_RESET;
+            break;
+         }
+
+         if (tick_timer == 0) po_state = PO_STATE_BLINK;
+      }
+      break;
+
+      case PO_STATE_RESET:
+      {
+         state = STATE_STOP;
+         po_state = PO_STATE_START;
+         tick_timer = 1000;
+         while (tick_timer != 0);
+         LED_ON();
+         tick_timer = 2000;
+         while (tick_timer != 0);
+         LED_OFF();
+         tick_timer = 1000;
+         while (tick_timer != 0);
+         reset_buttons();
+         stop_led_isr_blink = false;
+      }
+      break;
+   }
 }
