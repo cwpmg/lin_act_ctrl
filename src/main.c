@@ -31,7 +31,7 @@
 /* Private defines -----------------------------------------------------------*/
 
 #define MOTOR_RUN_TIME_MIN 40 // *100ms
-#define MOTOR_RUN_TIME_MAX 600
+#define MOTOR_RUN_TIME_MAX 900
 
 #define BTN_PROG_PRESS_SHORT_TIME_MIN 150 // *1ms
 #define BTN_PROG_PRESS_SHORT_TIME_MAX 1000
@@ -79,21 +79,33 @@ typedef enum
    PO_STATE_START = 0,
    PO_STATE_BLINK = 1,
    PO_STATE_WAIT_FOR_BTN = 2,
-   PO_STATE_RESET = 3
+   PO_STATE_EXIT = 3
 } po_state_t;
+
+typedef enum
+{
+   LT_STATE_START = 0,
+   LT_STATE_WAIT_FOR_BTN = 1,
+   LT_STATE_OPENING = 2,
+   LT_STATE_DELAY = 3,
+   LT_STATE_CLOSING = 4,
+   LT_STATE_EXIT = 5
+} lt_state_t;
 
 /* Private variables ---------------------------------------------------------*/
 
 static volatile state_t          state = STATE_STOP;
 static volatile next_state_t     next_state;
+static volatile uint16_t         led_on_time = 80;
+static volatile uint16_t         led_off_time = 1000;
 static volatile uint16_t         motor_timer = 0;
+static volatile uint16_t         learn_timer = 0;
 static volatile ctrl_in_state_t  ctrl_in_state = CTRL_IN_STATE_OFF;
 static volatile btn_prog_state_t btn_prog_state = BTN_PROG_RELEASED;
 static volatile uint16_t         tick_timer = 0;
 static volatile logic_t          logic;
 static volatile uint16_t         close_time;
 static volatile uint16_t         open_time;
-static volatile uint16_t         btn_prog_isr_cnt = 0;
 static volatile bool             stop_led_isr_blink = false;
 
 /* Private functions prototypes ----------------------------------------------*/
@@ -184,6 +196,7 @@ void t4_isr(void)
    {
       tim_100ms = 0;
       motor_timer_isr();
+      ++learn_timer;
    }
 
    ctrl_in_isr();
@@ -299,12 +312,16 @@ void led_isr(void)
 {
    static uint16_t cnt = 0;
 
-   if (stop_led_isr_blink) return;
+   if (stop_led_isr_blink)
+   {
+      cnt = 0;
+      return;
+   }
 
    ++cnt;
 
-   if (cnt == 80) LED_OFF();
-   else if (cnt == 1000)
+   if (cnt == led_on_time) LED_OFF();
+   else if (cnt == led_off_time)
    {
       cnt = 0;
       LED_ON();
@@ -347,7 +364,8 @@ bool ctrl_in_is_pressed(void)
 
 void btn_prog_isr(void)
 {
-   static bool wait_for_release = false;
+   static bool     wait_for_release = false;
+   static uint16_t btn_prog_isr_cnt = 0;
 
    if (wait_for_release)
    {
@@ -390,7 +408,6 @@ btn_prog_state_t btn_prog_get_state(void)
    if (state > BTN_PROG_RELEASED)
    {
       btn_prog_state = BTN_PROG_RELEASED;
-      // btn_prog_isr_cnt = 0;
    }
 
    return state;
@@ -400,17 +417,16 @@ void reset_buttons(void)
 {
    btn_prog_state = BTN_PROG_RELEASED;
    ctrl_in_state = CTRL_IN_STATE_OFF;
-   // btn_prog_isr_cnt = 0;
 }
 
 void blink(uint8_t times)
 {
    while (times != 0)
    {
-      tick_timer = 200;
+      tick_timer = 250;
       while (tick_timer != 0);
       LED_ON();
-      tick_timer = 200;
+      tick_timer = 250;
       while (tick_timer != 0);
       LED_OFF();
       --times;
@@ -419,6 +435,110 @@ void blink(uint8_t times)
 
 void learn_open_close_time(void)
 {
+   static uint8_t lt_state = LT_STATE_START;
+
+   uint16_t open_time_temp;
+   uint16_t close_time_temp;
+
+   while (true)
+   {
+      switch (lt_state)
+      {
+         case LT_STATE_START:
+         {
+            led_on_time = 70;
+            led_off_time = 140;
+            stop_led_isr_blink = false;
+            tick_timer = 6000;
+            lt_state = LT_STATE_WAIT_FOR_BTN;
+         }
+         break;
+
+         case LT_STATE_WAIT_FOR_BTN:
+         {
+            if (btn_prog_get_state() == BTN_PROG_PRESSED_SHORT)
+            {
+               REL_OPEN_ON();
+               lt_state = LT_STATE_OPENING;
+               learn_timer = 0;
+               break;
+            }
+
+            if (tick_timer == 0) lt_state = LT_STATE_EXIT;
+         }
+         break;
+
+         case LT_STATE_OPENING:
+         {
+            if (learn_timer > MOTOR_RUN_TIME_MAX)
+            {
+               REL_OPEN_OFF();
+               lt_state = LT_STATE_EXIT;
+               break;
+            }
+
+            if (btn_prog_get_state() == BTN_PROG_PRESSED_SHORT)
+            {
+               REL_OPEN_OFF();
+               open_time_temp = learn_timer;
+               tick_timer = 1000;
+
+               if (open_time_temp < MOTOR_RUN_TIME_MIN) lt_state = LT_STATE_EXIT;
+               else lt_state = LT_STATE_DELAY;
+            }
+         }
+         break;
+
+         case LT_STATE_DELAY:
+         {
+            if (tick_timer == 0)
+            {
+               REL_CLOSE_ON();
+               lt_state = LT_STATE_CLOSING;
+               learn_timer = 0;
+            }
+         }
+         break;
+
+         case LT_STATE_CLOSING:
+         {
+            if (learn_timer > MOTOR_RUN_TIME_MAX)
+            {
+               REL_CLOSE_OFF();
+               lt_state = LT_STATE_EXIT;
+               break;
+            }
+
+            if (btn_prog_get_state() == BTN_PROG_PRESSED_SHORT)
+            {
+               REL_CLOSE_OFF();
+               close_time_temp = learn_timer;
+
+               if (close_time_temp >= MOTOR_RUN_TIME_MIN)
+               {
+                  close_time = close_time_temp;
+                  open_time = open_time_temp;
+                  save_open_time_to_ee(open_time);
+                  save_close_time_to_ee(close_time);
+               }
+
+               lt_state = LT_STATE_EXIT;
+            }
+         }
+         break;
+
+         case LT_STATE_EXIT:
+         {
+            stop_led_isr_blink = true;
+            LED_OFF();
+            led_on_time = 80;
+            led_off_time = 1000;
+            lt_state = LT_STATE_START;
+            return;
+         }
+         break;
+      }
+   }
 }
 
 void program_options_handling(void)
@@ -451,7 +571,7 @@ void program_options_handling(void)
 
          if (++opt_number == 5)
          {
-            po_state = PO_STATE_RESET;
+            po_state = PO_STATE_EXIT;
             break;
          }
 
@@ -495,7 +615,7 @@ void program_options_handling(void)
             }
 
             blink(opt_number);
-            po_state = PO_STATE_RESET;
+            po_state = PO_STATE_EXIT;
             break;
          }
 
@@ -503,7 +623,7 @@ void program_options_handling(void)
       }
       break;
 
-      case PO_STATE_RESET:
+      case PO_STATE_EXIT:
       {
          state = STATE_STOP;
          po_state = PO_STATE_START;
