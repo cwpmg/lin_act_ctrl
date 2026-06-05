@@ -9,6 +9,10 @@
 
 #define LED_PORT       GPIOB
 #define LED_PIN        GPIO_PIN_5
+#define LED_RED_PORT   GPIOD
+#define LED_RED_PIN    GPIO_PIN_5
+#define LED_GREEN_PORT GPIOD
+#define LED_GREEN_PIN  GPIO_PIN_6
 #define REL_OPEN_PORT  GPIOD
 #define REL_OPEN_PIN   GPIO_PIN_3
 #define REL_CLOSE_PORT GPIOD
@@ -18,15 +22,21 @@
 #define CTRL_IN_PORT   GPIOC
 #define CTRL_IN_PIN    GPIO_PIN_5
 
-#define LED_ON()        GPIO_WriteLow(LED_PORT, LED_PIN)
-#define LED_OFF()       GPIO_WriteHigh(LED_PORT, LED_PIN)
-#define LED_TOGGLE()    GPIO_WriteReverse(LED_PORT, LED_PIN)
-#define REL_OPEN_ON()   GPIO_WriteHigh(REL_OPEN_PORT, REL_OPEN_PIN)
-#define REL_OPEN_OFF()  GPIO_WriteLow(REL_OPEN_PORT, REL_OPEN_PIN)
-#define REL_CLOSE_ON()  GPIO_WriteHigh(REL_CLOSE_PORT, REL_CLOSE_PIN)
-#define REL_CLOSE_OFF() GPIO_WriteLow(REL_CLOSE_PORT, REL_CLOSE_PIN)
-#define BTN_PROG_VAL()  GPIO_ReadInputPin(BTN_PROG_PORT, BTN_PROG_PIN)
-#define CTRL_IN_VAL()   GPIO_ReadInputPin(CTRL_IN_PORT, CTRL_IN_PIN)
+#define LED_ON()           GPIO_WriteLow(LED_PORT, LED_PIN)
+#define LED_OFF()          GPIO_WriteHigh(LED_PORT, LED_PIN)
+#define LED_TOGGLE()       GPIO_WriteReverse(LED_PORT, LED_PIN)
+#define LED_RED_ON()       GPIO_WriteHigh(LED_RED_PORT, LED_RED_PIN)
+#define LED_RED_OFF()      GPIO_WriteLow(LED_RED_PORT, LED_RED_PIN)
+#define LED_RED_TOGGLE()   GPIO_WriteReverse(LED_RED_PORT, LED_RED_PIN)
+#define LED_GREEN_ON()     GPIO_WriteHigh(LED_GREEN_PORT, LED_GREEN_PIN)
+#define LED_GREEN_OFF()    GPIO_WriteLow(LED_GREEN_PORT, LED_GREEN_PIN)
+#define LED_GREEN_TOGGLE() GPIO_WriteReverse(LED_GREEN_PORT, LED_GREEN_PIN)
+#define REL_OPEN_ON()      GPIO_WriteHigh(REL_OPEN_PORT, REL_OPEN_PIN)
+#define REL_OPEN_OFF()     GPIO_WriteLow(REL_OPEN_PORT, REL_OPEN_PIN)
+#define REL_CLOSE_ON()     GPIO_WriteHigh(REL_CLOSE_PORT, REL_CLOSE_PIN)
+#define REL_CLOSE_OFF()    GPIO_WriteLow(REL_CLOSE_PORT, REL_CLOSE_PIN)
+#define BTN_PROG_VAL()     GPIO_ReadInputPin(BTN_PROG_PORT, BTN_PROG_PIN)
+#define CTRL_IN_VAL()      GPIO_ReadInputPin(CTRL_IN_PORT, CTRL_IN_PIN)
 
 /* Private defines -----------------------------------------------------------*/
 
@@ -37,6 +47,12 @@
 #define BTN_PROG_PRESS_SHORT_TIME_MAX 1000
 #define BTN_PROG_PRESS_LONG_TIME      3000
 #define BTN_PROG_RELEASE_TIME         150
+
+#define BLINK_TIME          250
+#define BLINK_FAST_ON_TIME  70
+#define BLINK_FAST_OFF_TIME 140
+#define BLINK_SLOW_ON_TIME  70
+#define BLINK_SLOW_OFF_TIME 2000
 
 /* Private typedefs ----------------------------------------------------------*/
 
@@ -94,26 +110,30 @@ typedef enum
 
 /* Private variables ---------------------------------------------------------*/
 
+static volatile logic_t      logic;
+static volatile uint16_t     close_time;
+static volatile uint16_t     open_time;
+static volatile uint16_t     learn_timer;
+static volatile next_state_t next_state;
+
 static volatile state_t          state = STATE_STOP;
-static volatile next_state_t     next_state;
-static volatile uint16_t         led_on_time = 80;
-static volatile uint16_t         led_off_time = 1000;
-static volatile uint16_t         motor_timer = 0;
-static volatile uint16_t         learn_timer = 0;
 static volatile ctrl_in_state_t  ctrl_in_state = CTRL_IN_STATE_OFF;
 static volatile btn_prog_state_t btn_prog_state = BTN_PROG_RELEASED;
-static volatile uint16_t         tick_timer = 0;
-static volatile logic_t          logic;
-static volatile uint16_t         close_time;
-static volatile uint16_t         open_time;
-static volatile bool             stop_led_isr_blink = false;
+
+static volatile uint16_t led_on_time = BLINK_SLOW_ON_TIME;
+static volatile uint16_t led_off_time = BLINK_SLOW_OFF_TIME;
+static volatile uint16_t motor_timer = 0;
+static volatile uint16_t tick_timer = 0;
+
+static volatile bool stop_led_isr_blink = false;
+static volatile bool led_active = false;
+static volatile bool led_red_active = false;
+static volatile bool led_green_active = false;
 
 /* Private functions prototypes ----------------------------------------------*/
 
 void init_peripherals(void);
 void restore_data_from_ee(void);
-void motor_close(void);
-void motor_open(void);
 void motor_stop(void);
 void motor_run(void);
 void motor_timer_isr(void);
@@ -123,6 +143,9 @@ bool ctrl_in_is_pressed(void);
 void btn_prog_isr(void);
 void blink(uint8_t times);
 void program_options_handling(void);
+void reset_buttons(void);
+void leds_on(void);
+void leds_off(void);
 
 btn_prog_state_t btn_prog_get_state(void);
 
@@ -135,6 +158,8 @@ void main(void)
    init_peripherals();
 
    restore_data_from_ee();
+
+   led_green_active = true;
 
    enableInterrupts();
 
@@ -216,6 +241,8 @@ void init_peripherals(void)
    CLK_HSIPrescalerConfig(CLK_PRESCALER_HSIDIV1);
 
    GPIO_Init(LED_PORT, LED_PIN, GPIO_MODE_OUT_PP_HIGH_FAST);
+   GPIO_Init(LED_RED_PORT, LED_RED_PIN, GPIO_MODE_OUT_PP_LOW_FAST);
+   GPIO_Init(LED_GREEN_PORT, LED_GREEN_PIN, GPIO_MODE_OUT_PP_LOW_FAST);
    GPIO_Init(REL_CLOSE_PORT, REL_CLOSE_PIN, GPIO_MODE_OUT_PP_LOW_FAST);
    GPIO_Init(REL_OPEN_PORT, REL_OPEN_PIN, GPIO_MODE_OUT_PP_LOW_FAST);
    GPIO_Init(BTN_PROG_PORT, BTN_PROG_PIN, GPIO_MODE_IN_PU_NO_IT);
@@ -259,37 +286,41 @@ void restore_data_from_ee(void)
    }
 }
 
-void motor_close(void)
-{
-   REL_CLOSE_ON();
-   next_state = NEXT_STATE_OPEN;
-   motor_timer = close_time;
-}
-
-void motor_open(void)
-{
-   REL_OPEN_ON();
-   next_state = NEXT_STATE_CLOSE;
-   motor_timer = open_time;
-}
-
 void motor_stop(void)
 {
    REL_CLOSE_OFF();
    REL_OPEN_OFF();
    motor_timer = 0;
+   led_on_time = BLINK_SLOW_ON_TIME;
+   led_off_time = BLINK_SLOW_OFF_TIME;
 }
 
 void motor_run(void)
 {
+   stop_led_isr_blink = true;
+
    if (next_state == NEXT_STATE_CLOSE)
    {
-      motor_close();
+      REL_CLOSE_ON();
+      next_state = NEXT_STATE_OPEN;
+      save_next_state_to_ee(next_state);
+      led_green_active = false;
+      led_red_active = true;
+      motor_timer = close_time;
    }
    else if (next_state == NEXT_STATE_OPEN)
    {
-      motor_open();
+      REL_OPEN_ON();
+      next_state = NEXT_STATE_CLOSE;
+      save_next_state_to_ee(next_state);
+      led_red_active = false;
+      led_green_active = true;
+      motor_timer = open_time;
    }
+
+   led_on_time = BLINK_FAST_ON_TIME;
+   led_off_time = BLINK_FAST_OFF_TIME;
+   stop_led_isr_blink = false;
 
    state = STATE_MOTOR_WORKING;
 }
@@ -304,6 +335,8 @@ void motor_timer_isr(void)
          REL_OPEN_OFF();
          state = STATE_STOP;
          reset_buttons();
+         led_on_time = BLINK_SLOW_ON_TIME;
+         led_off_time = BLINK_SLOW_OFF_TIME;
       }
    }
 }
@@ -320,12 +353,26 @@ void led_isr(void)
 
    ++cnt;
 
-   if (cnt == led_on_time) LED_OFF();
+   if (cnt == led_on_time) leds_off();
    else if (cnt == led_off_time)
    {
       cnt = 0;
-      LED_ON();
+      leds_on();
    }
+}
+
+void leds_on(void)
+{
+   if (led_active) LED_ON();
+   if (led_green_active) LED_GREEN_ON();
+   if (led_red_active) LED_RED_ON();
+}
+
+void leds_off(void)
+{
+   LED_OFF();
+   LED_GREEN_OFF();
+   LED_RED_OFF();
 }
 
 void ctrl_in_isr(void)
@@ -423,10 +470,10 @@ void blink(uint8_t times)
 {
    while (times != 0)
    {
-      tick_timer = 250;
+      tick_timer = BLINK_TIME;
       while (tick_timer != 0);
       LED_ON();
-      tick_timer = 250;
+      tick_timer = BLINK_TIME;
       while (tick_timer != 0);
       LED_OFF();
       --times;
@@ -437,8 +484,8 @@ void learn_open_close_time(void)
 {
    static uint8_t lt_state = LT_STATE_START;
 
-   uint16_t open_time_temp;
-   uint16_t close_time_temp;
+   uint16_t open_time_temp = 0;
+   uint16_t close_time_temp = 0;
 
    while (true)
    {
@@ -446,8 +493,8 @@ void learn_open_close_time(void)
       {
          case LT_STATE_START:
          {
-            led_on_time = 70;
-            led_off_time = 140;
+            led_on_time = BLINK_FAST_ON_TIME;
+            led_off_time = BLINK_FAST_OFF_TIME;
             stop_led_isr_blink = false;
             tick_timer = 6000;
             lt_state = LT_STATE_WAIT_FOR_BTN;
@@ -531,8 +578,8 @@ void learn_open_close_time(void)
          {
             stop_led_isr_blink = true;
             LED_OFF();
-            led_on_time = 80;
-            led_off_time = 1000;
+            led_on_time = BLINK_SLOW_ON_TIME;
+            led_off_time = BLINK_SLOW_OFF_TIME;
             lt_state = LT_STATE_START;
             return;
          }
