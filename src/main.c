@@ -108,22 +108,35 @@ typedef enum
    LT_STATE_EXIT = 5
 } lt_state_t;
 
+typedef enum
+{
+   LED = 1,
+   LED_RED = 2,
+   LED_GREEN = 3
+} leds_t;
+
+typedef enum
+{
+   LED_BLINK_SLOW = 0,
+   LED_BLINK_FAST = 1
+} led_blink_type_t;
+
 /* Private variables ---------------------------------------------------------*/
 
 static volatile logic_t      logic;
-static volatile uint16_t     close_time;
-static volatile uint16_t     open_time;
-static volatile uint16_t     learn_timer;
+static volatile motor_time_t close_time;
+static volatile motor_time_t open_time;
+static volatile motor_time_t learn_timer;
 static volatile next_state_t next_state;
 
 static volatile state_t          state = STATE_STOP;
 static volatile ctrl_in_state_t  ctrl_in_state = CTRL_IN_STATE_OFF;
 static volatile btn_prog_state_t btn_prog_state = BTN_PROG_RELEASED;
 
-static volatile uint16_t led_on_time = BLINK_SLOW_ON_TIME;
-static volatile uint16_t led_off_time = BLINK_SLOW_OFF_TIME;
-static volatile uint16_t motor_timer = 0;
-static volatile uint16_t tick_timer = 0;
+static volatile uint16_t     led_on_time = BLINK_SLOW_ON_TIME;
+static volatile uint16_t     led_off_time = BLINK_SLOW_OFF_TIME;
+static volatile uint16_t     tick_timer = 0;
+static volatile motor_time_t motor_timer = 0;
 
 static volatile bool stop_led_isr_blink = false;
 static volatile bool led_active = false;
@@ -144,8 +157,9 @@ void btn_prog_isr(void);
 void blink(uint8_t times);
 void program_options_handling(void);
 void reset_buttons(void);
-void leds_on(void);
 void leds_off(void);
+void restore_slow_blinking(void);
+void leds_blink_set(leds_t led_nb, led_blink_type_t blink_type);
 
 btn_prog_state_t btn_prog_get_state(void);
 
@@ -158,8 +172,6 @@ void main(void)
    init_peripherals();
 
    restore_data_from_ee();
-
-   led_green_active = true;
 
    enableInterrupts();
 
@@ -284,6 +296,8 @@ void restore_data_from_ee(void)
       open_time = MOTOR_RUN_TIME_MIN;
       save_open_time_to_ee(open_time);
    }
+
+   restore_slow_blinking();
 }
 
 void motor_stop(void)
@@ -297,30 +311,22 @@ void motor_stop(void)
 
 void motor_run(void)
 {
-   stop_led_isr_blink = true;
-
    if (next_state == NEXT_STATE_CLOSE)
    {
-      REL_CLOSE_ON();
       next_state = NEXT_STATE_OPEN;
       save_next_state_to_ee(next_state);
-      led_green_active = false;
-      led_red_active = true;
+      leds_blink_set(LED_RED, LED_BLINK_FAST);
       motor_timer = close_time;
+      REL_CLOSE_ON();
    }
    else if (next_state == NEXT_STATE_OPEN)
    {
-      REL_OPEN_ON();
       next_state = NEXT_STATE_CLOSE;
       save_next_state_to_ee(next_state);
-      led_red_active = false;
-      led_green_active = true;
+      leds_blink_set(LED_GREEN, LED_BLINK_FAST);
       motor_timer = open_time;
+      REL_OPEN_ON();
    }
-
-   led_on_time = BLINK_FAST_ON_TIME;
-   led_off_time = BLINK_FAST_OFF_TIME;
-   stop_led_isr_blink = false;
 
    state = STATE_MOTOR_WORKING;
 }
@@ -353,19 +359,20 @@ void led_isr(void)
 
    ++cnt;
 
-   if (cnt == led_on_time) leds_off();
-   else if (cnt == led_off_time)
+   if (cnt == led_on_time)
+   {
+      LED_OFF();
+      LED_GREEN_OFF();
+      LED_RED_OFF();
+   }
+
+   if (cnt >= led_off_time)
    {
       cnt = 0;
-      leds_on();
+      if (led_active) LED_ON();
+      if (led_green_active) LED_GREEN_ON();
+      if (led_red_active) LED_RED_ON();
    }
-}
-
-void leds_on(void)
-{
-   if (led_active) LED_ON();
-   if (led_green_active) LED_GREEN_ON();
-   if (led_red_active) LED_RED_ON();
 }
 
 void leds_off(void)
@@ -373,6 +380,45 @@ void leds_off(void)
    LED_OFF();
    LED_GREEN_OFF();
    LED_RED_OFF();
+   stop_led_isr_blink = true;
+}
+
+void leds_blink_set(leds_t led_nb, led_blink_type_t blink_type)
+{
+   stop_led_isr_blink = true;
+
+   led_active = false;
+   led_green_active = false;
+   led_red_active = false;
+
+   if (led_nb == LED) led_active = true;
+   else if (led_nb == LED_RED) led_red_active = true;
+   else if (led_nb == LED_GREEN) led_green_active = true;
+
+   if (blink_type == LED_BLINK_SLOW)
+   {
+      led_on_time = BLINK_SLOW_ON_TIME;
+      led_off_time = BLINK_SLOW_OFF_TIME;
+   }
+   else if (blink_type == LED_BLINK_FAST)
+   {
+      led_on_time = BLINK_FAST_ON_TIME;
+      led_off_time = BLINK_FAST_OFF_TIME;
+   }
+
+   stop_led_isr_blink = false;
+}
+
+void restore_slow_blinking(void)
+{
+   led_active = false;
+
+   if (next_state == NEXT_STATE_OPEN) led_red_active = true;
+   else led_green_active = true;
+
+   led_on_time = BLINK_SLOW_ON_TIME;
+   led_off_time = BLINK_SLOW_OFF_TIME;
+   stop_led_isr_blink = false;
 }
 
 void ctrl_in_isr(void)
@@ -484,8 +530,8 @@ void learn_open_close_time(void)
 {
    static uint8_t lt_state = LT_STATE_START;
 
-   uint16_t open_time_temp = 0;
-   uint16_t close_time_temp = 0;
+   motor_time_t open_time_temp = 0;
+   motor_time_t close_time_temp = 0;
 
    while (true)
    {
@@ -493,9 +539,7 @@ void learn_open_close_time(void)
       {
          case LT_STATE_START:
          {
-            led_on_time = BLINK_FAST_ON_TIME;
-            led_off_time = BLINK_FAST_OFF_TIME;
-            stop_led_isr_blink = false;
+            leds_blink_set(LED, LED_BLINK_FAST);
             tick_timer = 6000;
             lt_state = LT_STATE_WAIT_FOR_BTN;
          }
@@ -567,6 +611,8 @@ void learn_open_close_time(void)
                   open_time = open_time_temp;
                   save_open_time_to_ee(open_time);
                   save_close_time_to_ee(close_time);
+                  next_state = NEXT_STATE_OPEN;
+                  save_next_state_to_ee(next_state);
                }
 
                lt_state = LT_STATE_EXIT;
@@ -576,10 +622,7 @@ void learn_open_close_time(void)
 
          case LT_STATE_EXIT:
          {
-            stop_led_isr_blink = true;
-            LED_OFF();
-            led_on_time = BLINK_SLOW_ON_TIME;
-            led_off_time = BLINK_SLOW_OFF_TIME;
+            leds_off();
             lt_state = LT_STATE_START;
             return;
          }
@@ -597,7 +640,7 @@ void program_options_handling(void)
    {
       case PO_STATE_START:
       {
-         stop_led_isr_blink = true;
+         leds_off();
          opt_number = 0;
 
          LED_ON();
@@ -672,8 +715,6 @@ void program_options_handling(void)
 
       case PO_STATE_EXIT:
       {
-         state = STATE_STOP;
-         po_state = PO_STATE_START;
          tick_timer = 1000;
          while (tick_timer != 0);
          LED_ON();
@@ -682,8 +723,11 @@ void program_options_handling(void)
          LED_OFF();
          tick_timer = 1000;
          while (tick_timer != 0);
+
+         state = STATE_STOP;
+         po_state = PO_STATE_START;
          reset_buttons();
-         stop_led_isr_blink = false;
+         restore_slow_blinking();
       }
       break;
    }
