@@ -2,10 +2,10 @@
 #include "eeprom.h"
 #include "iostm8s003.h"
 
-@eeprom uint8_t      ee_next_state;
-@eeprom uint8_t      ee_logic;
-@eeprom motor_time_t ee_close_time;
-@eeprom motor_time_t ee_open_time;
+@eeprom uint8_t      ee_next_state = 0;
+@eeprom uint8_t      ee_logic = 0;
+@eeprom motor_time_t ee_close_time = 40;
+@eeprom motor_time_t ee_open_time = 40;
 
 void save_next_state_to_ee(uint8_t state)
 {
